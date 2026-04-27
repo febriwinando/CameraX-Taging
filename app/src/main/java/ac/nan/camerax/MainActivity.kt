@@ -135,6 +135,11 @@ class MainActivity : AppCompatActivity() {
         mainBinding.flashToggleIB.setOnClickListener {
             setFlashIcon(camera)
         }
+
+        mainBinding.openGalleryIB.setOnClickListener {
+            val intent = Intent(this, GalleryActivity::class.java)
+            startActivity(intent)
+        }
     }
 
 
@@ -411,15 +416,10 @@ class MainActivity : AppCompatActivity() {
                     val uri = outputFileResults.savedUri ?: return
 
                     val filePath = getRealPathFromURI(uri)
-
                     val bitmap = BitmapFactory.decodeFile(filePath)
-
                     val fixedBitmap = fixRotation(filePath, bitmap)
-
                     ambilLokasiLengkap { lokasiText ->
-
                         val finalBitmap = tambahWatermark(fixedBitmap, lokasiText)
-
                         val savedFile = saveBitmapToFile(finalBitmap)
 
                         runOnUiThread {
