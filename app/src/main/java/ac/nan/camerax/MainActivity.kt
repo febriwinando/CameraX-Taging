@@ -2,10 +2,21 @@ package ac.nan.camerax
 
 
 import ac.nan.camerax.databinding.ActivityMainBinding
+import android.Manifest
 import android.content.ContentValues
 import android.content.DialogInterface
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
 import android.graphics.RectF
+import android.location.Geocoder
+import android.media.ExifInterface
+import android.net.Uri
 import android.os.*
 import android.provider.MediaStore
 import android.util.Log
@@ -31,8 +42,11 @@ import com.coding.camerausingcamerax.appSettingOpen
 import com.coding.camerausingcamerax.gone
 import com.coding.camerausingcamerax.visible
 import com.coding.camerausingcamerax.warningPermissionDialog
+import com.google.android.gms.location.LocationServices
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -383,13 +397,37 @@ class MainActivity : AppCompatActivity() {
             outputOption,
             ContextCompat.getMainExecutor(this),
             object : ImageCapture.OnImageSavedCallback {
+//                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+//                    val message = "Photo Capture Succeeded: ${outputFileResults.savedUri}"
+//                    Toast.makeText(
+//                        this@MainActivity,
+//                        message,
+//                        Toast.LENGTH_LONG
+//                    ).show()
+//                }
+
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                    val message = "Photo Capture Succeeded: ${outputFileResults.savedUri}"
-                    Toast.makeText(
-                        this@MainActivity,
-                        message,
-                        Toast.LENGTH_LONG
-                    ).show()
+
+                    val uri = outputFileResults.savedUri ?: return
+
+                    val filePath = getRealPathFromURI(uri)
+
+                    val bitmap = BitmapFactory.decodeFile(filePath)
+
+                    val fixedBitmap = fixRotation(filePath, bitmap)
+
+                    ambilLokasiLengkap { lokasiText ->
+
+                        val finalBitmap = tambahWatermark(fixedBitmap, lokasiText)
+
+                        val savedFile = saveBitmapToFile(finalBitmap)
+
+                        runOnUiThread {
+                            val intent = Intent(this@MainActivity, PreviewActivity::class.java)
+                            intent.putExtra("image_path", savedFile.absolutePath)
+                            startActivity(intent)
+                        }
+                    }
                 }
 
                 override fun onError(exception: ImageCaptureException) {
@@ -536,5 +574,210 @@ class MainActivity : AppCompatActivity() {
         mainBinding.recodingTimerC.stop()
         handler.removeCallbacks(updateTimer)
     }
+
+    private fun getRealPathFromURI(uri: Uri): String {
+        val projection = arrayOf(MediaStore.Images.Media.DATA)
+        val cursor = contentResolver.query(uri, projection, null, null, null)
+        cursor?.moveToFirst()
+        val columnIndex = cursor?.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)
+        val path = cursor?.getString(columnIndex!!)
+        cursor?.close()
+        return path ?: ""
+    }
+
+    private fun saveBitmapToFile(bitmap: Bitmap): File {
+
+        val file = File(
+            getExternalFilesDir(Environment.DIRECTORY_PICTURES),
+            "TAG_${System.currentTimeMillis()}.jpg"
+        )
+
+        val out = FileOutputStream(file)
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)
+        out.flush()
+        out.close()
+
+        // Masuk ke galeri
+        MediaStore.Images.Media.insertImage(
+            contentResolver,
+            file.absolutePath,
+            file.name,
+            null
+        )
+
+        return file
+    }
+
+
+    private fun tambahWatermark(bitmap: Bitmap, text: String): Bitmap {
+
+        val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+        val canvas = Canvas(result)
+
+        val paint = Paint().apply {
+            color = Color.WHITE
+            textSize = bitmap.height * 0.035f
+            isAntiAlias = true
+            setShadowLayer(6f, 0f, 0f, Color.BLACK)
+        }
+
+        val lineHeight = paint.textSize + 10f
+        val maxWidth = bitmap.width - 40f
+
+        val finalLines = mutableListOf<String>()
+        val baseLines = text.split("\n")
+
+        for (line in baseLines) {
+            val wrapped = wrapText(line, paint, maxWidth)
+            finalLines.addAll(wrapped)
+        }
+
+        val startY = bitmap.height - (finalLines.size * lineHeight) - 30
+
+        val bgPaint = Paint().apply {
+            color = Color.parseColor("#88000000")
+        }
+
+        canvas.drawRect(
+            10f,
+            startY,
+            bitmap.width - 10f,
+            bitmap.height.toFloat(),
+            bgPaint
+        )
+
+        var y = startY + lineHeight
+
+        for (line in finalLines) {
+            canvas.drawText(line, 20f, y, paint)
+            y += lineHeight
+        }
+
+        return result
+    }
+
+
+    private fun ambilLokasiLengkap(callback: (String) -> Unit) {
+
+        val client = LocationServices.getFusedLocationProviderClient(this)
+
+        if (ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            callback("Lokasi tidak diizinkan")
+            return
+        }
+
+        client.lastLocation.addOnSuccessListener { loc ->
+
+            if (loc == null) {
+                callback("Lokasi tidak tersedia")
+                return@addOnSuccessListener
+            }
+
+            try {
+                val geo = Geocoder(this, Locale("id"))
+                val list = geo.getFromLocation(loc.latitude, loc.longitude, 1)
+
+                val waktu = SimpleDateFormat(
+                    "EEEE, dd MMMM yyyy HH:mm:ss",
+                    Locale("id")
+                ).format(Date())
+
+                if (!list.isNullOrEmpty()) {
+
+                    val a = list[0]
+                    val jalan = buildString {
+                        append(a.thoroughfare ?: "-")
+                        if (!a.subThoroughfare.isNullOrEmpty()) {
+                            append(" No. ${a.subThoroughfare}")
+                        }
+                    }
+
+                    val text = """
+                    Alamat:$jalan
+                    Kel/Desa: ${a.subLocality ?: "-"}
+                    Kecamatan: ${a.locality ?: "-"}
+                    Kota/Kab: ${a.subAdminArea ?: "-"}
+                    Provinsi: ${a.adminArea ?: "-"}
+                    Latitude: ${loc.latitude}
+                    Longitude: ${loc.longitude}
+                    $waktu
+                    """.trimIndent()
+
+                    callback(text)
+
+                } else {
+
+                    val text = """
+                        Lat: ${loc.latitude}
+                        Lng: ${loc.longitude}
+                        $waktu
+                """.trimIndent()
+
+                    callback(text)
+                }
+
+            } catch (e: Exception) {
+                callback("Gagal ambil alamat\nLat: ${loc.latitude}, Lng: ${loc.longitude}")
+            }
+        }
+    }
+
+    private fun wrapText(text: String, paint: Paint, maxWidth: Float): List<String> {
+        val words = text.split(" ")
+        val lines = mutableListOf<String>()
+        var currentLine = ""
+
+        for (word in words) {
+            val testLine = if (currentLine.isEmpty()) word else "$currentLine $word"
+            val width = paint.measureText(testLine)
+
+            if (width > maxWidth) {
+                lines.add(currentLine)
+                currentLine = word
+            } else {
+                currentLine = testLine
+            }
+        }
+
+        if (currentLine.isNotEmpty()) {
+            lines.add(currentLine)
+        }
+
+        return lines
+    }
+
+    private fun fixRotation(path: String, bitmap: Bitmap): Bitmap {
+
+        val exif = ExifInterface(path)
+
+        val orientation = exif.getAttributeInt(
+            ExifInterface.TAG_ORIENTATION,
+            ExifInterface.ORIENTATION_NORMAL
+        )
+
+        val matrix = Matrix()
+
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            else -> return bitmap
+        }
+
+        return Bitmap.createBitmap(
+            bitmap,
+            0,
+            0,
+            bitmap.width,
+            bitmap.height,
+            matrix,
+            true
+        )
+    }
+
 
 }
